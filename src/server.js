@@ -2,7 +2,7 @@
 
 // 零依赖 HTTP 服务：页面、健康路径、审计接口。
 const http = require('http');
-const { audit } = require('./bisimulation');
+const { audit, auditBranching } = require('./bisimulation');
 const { samples } = require('./samples');
 
 const PORT = Number(process.env.PORT || 8080);
@@ -57,7 +57,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 400, { ok: false, equivalent: null, errors: [{ code: 'BAD_JSON', field: 'body', side: null, message: '请求体不是合法 JSON' }], rounds: [], eliminatedPairs: [], firstEliminated: null, initialPairs: [] });
       return;
     }
-    const result = audit(payload.procA, payload.procB);
+    // mode 缺省或 "weak" 走原有普通弱互模拟接口；"branching" 走分支保持复核。
+    // 两种模式各自独立计算，普通模式的响应结构与结论保持不变。
+    const result = payload && payload.mode === 'branching'
+      ? auditBranching(payload.procA, payload.procB)
+      : audit(payload && payload.procA, payload && payload.procB);
     // 输入无效时同样以 200 返回结构化问题集合（结论字段为空，表示已清除旧结论）；
     // 仅结构错误（非 JSON）才返回 400。
     sendJson(res, 200, result);

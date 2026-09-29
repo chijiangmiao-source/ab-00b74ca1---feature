@@ -7,6 +7,9 @@
 //   3) 接口 / HTTP 冒烟：健康路径、页面、审计接口
 //      - 静默环等价规程：审计必须判定等价，关系含两个初始状态对
 //      - 缺失匹配动作规程：审计必须判定不等价，且失败依据只引用更早轮次
+//      - 静默分叉规程：普通模式判等价；分支保持复核判不等价，
+//        初始对的静默前缀候选引用更早轮次淘汰对并可标出同轮违约
+//      - 普通审计接口（不带 mode）响应与结论不随分支保持功能改变
 //      - 无效输入：一次返回全部问题并清除旧结论
 // 完成后退出：全部通过 0，任一失败 1。
 
@@ -93,6 +96,26 @@ async function postAudit(body) {
   return res.json();
 }
 
+function assertBranchingEvidence(j) {
+  // 证据不变量：被拒候选至少含一个严格更早轮次淘汰锚点；候选稳定排序
+  for (const ep of j.eliminatedPairs) {
+    for (const t of ep.transitions) {
+      if (t.reason !== 'ALL_CANDIDATES_REJECTED') continue;
+      assert.ok(Array.isArray(t.candidates) && t.candidates.length > 0, '被拒边须列出静默前缀候选');
+      for (const c of t.candidates) {
+        const nodes = [c.landing, ...(c.prefixPairs || [])];
+        assert.ok(
+          nodes.some((n) => n.status === 'eliminated' && n.eliminatedRound < ep.round),
+          `候选必须引用严格更早轮次淘汰对：${JSON.stringify(c)} in round ${ep.round}`,
+        );
+        const prefixInRelation = nodes.filter((n) => n.status === 'same-round');
+        // same-round 节点不携带 eliminatedRound
+        for (const n of prefixInRelation) assert.ok(!('eliminatedRound' in n));
+      }
+    }
+  }
+}
+
 (async () => {
   await astep('服务健康检查就绪 GET /healthz', async () => {
     await waitReady(BASE);
@@ -149,6 +172,126 @@ async function postAudit(body) {
         }
       }
     }
+  });
+
+  await astep('静默分叉规程：普通弱互模拟判等价，且普通响应不含 mode 字段', async () => {
+    const j = await postAudit(samples.branching);
+    assert.equal(j.ok, true);
+    assert.equal(j.equivalent, true, JSON.stringify(j.eliminatedPairs));
+    assert.equal('mode' in j, false, '普通审计接口结构不得改变');
+    assert.ok(j.initialAlive.every(Boolean));
+    // 未知 mode 取值回退到普通弱互模拟
+    const j2 = await postAudit({ ...samples.branching, mode: 'unknown' });
+    assert.equal(j2.equivalent, true);
+    assert.equal('mode' in j2, false);
+  });
+
+  await astep('静默分叉规程：分支保持复核判不等价（弱等价 / 分支保持不等价的 HTTP 场景）', async () => {
+    const j = await postAudit({ ...samples.branching, mode: 'branching' });
+    assert.equal(j.ok, true);
+    assert.equal(j.mode, 'branching');
+    assert.equal(j.equivalent, false, '该静默分叉应被分支保持复核拒绝');
+    assert.equal(j.initialAlive[0], false);
+    assert.deepEqual(j.initialPairs, [['s0', 'q0'], ['q0', 's0']]);
+
+    // 初始对 (s0,q0) 第 2 轮淘汰，首个失败动作为 a（A 方挑战）
+    const init = j.eliminatedPairs.find((p) => p.pair[0] === 's0' && p.pair[1] === 'q0');
+    assert.ok(init, '初始对应出现在淘汰列表中');
+    assert.equal(init.round, 2);
+    assert.equal(init.action, 'a');
+    assert.equal(init.challenger, 'A');
+
+    // 首个淘汰状态对为 (s0,q1)（q1 在静默后不能 c）
+    assert.deepEqual(j.firstEliminated.pair, ['s0', 'q1']);
+    assert.equal(j.firstEliminated.round, 1);
+    assert.equal(j.firstEliminated.action, 'c');
+
+    // 初始对失败边 s0 -a-> s2 的静默前缀候选：经 q1 承接
+    const edge = init.transitions.find((t) => t.source === 's0' && t.target === 's2');
+    assert.equal(edge.reason, 'ALL_CANDIDATES_REJECTED');
+    assert.ok(edge.candidates.length >= 1);
+    const c = edge.candidates[0];
+    assert.deepEqual(c.prefix, ['q1']);
+    assert.equal(c.target, 'q2');
+    // 前缀状态对 (s0,q1) 第 1 轮淘汰——静默步骤悄然丢失了 q1 不能 c 的另一侧承诺
+    const pp = c.prefixPairs.find((p) => p.state === 'q1');
+    assert.ok(pp);
+    assert.deepEqual(pp.pair, ['s0', 'q1']);
+    assert.equal(pp.status, 'eliminated');
+    assert.equal(pp.eliminatedRound, 1);
+    // 落点对仍存活：弱模式不关心前缀，分支模式因前缀违约而拒绝——两种模式差异点
+    assert.equal(c.landing.status, 'alive');
+
+    assertBranchingEvidence(j);
+  });
+
+  await astep('分支保持证据可标注“本轮同批淘汰”的同轮关系违约节点', async () => {
+    const procA = {
+      states: [{ name: 's0' }, { name: 's1' }],
+      initial: 's0',
+      transitions: [
+        { id: 'st0', from: 's1', action: 'tau', to: 's0' },
+        { id: 'st1', from: 's0', action: 'b', to: 's1' },
+        { id: 'st2', from: 's1', action: 'a', to: 's1' },
+      ],
+    };
+    const procB = {
+      states: [{ name: 'q0' }, { name: 'q1' }, { name: 'q2' }, { name: 'q3' }],
+      initial: 'q0',
+      transitions: [
+        { id: 'qt0', from: 'q3', action: 'tau', to: 'q1' },
+        { id: 'qt1', from: 'q2', action: 'b', to: 'q1' },
+        { id: 'qt2', from: 'q2', action: 'a', to: 'q3' },
+        { id: 'qt3', from: 'q2', action: 'tau', to: 'q3' },
+        { id: 'qt4', from: 'q3', action: 'tau', to: 'q0' },
+        { id: 'qt5', from: 'q2', action: 'b', to: 'q2' },
+        { id: 'qt6', from: 'q1', action: 'tau', to: 'q1' },
+        { id: 'qt7', from: 'q1', action: 'tau', to: 'q2' },
+        { id: 'qt8', from: 'q0', action: 'b', to: 'q2' },
+      ],
+    };
+    const weak = await postAudit({ procA, procB });
+    assert.equal(weak.equivalent, true);
+    const j = await postAudit({ procA, procB, mode: 'branching' });
+    assert.equal(j.equivalent, false);
+    let sawSameRound = false;
+    for (const ep of j.eliminatedPairs) {
+      for (const t of ep.transitions) {
+        for (const c of (t.candidates || [])) {
+          for (const n of [c.landing, ...(c.prefixPairs || [])]) {
+            if (n.status === 'same-round') sawSameRound = true;
+          }
+        }
+      }
+    }
+    assert.ok(sawSameRound, '证据中应出现同轮关系违约节点');
+    assertBranchingEvidence(j);
+  });
+
+  await astep('分支保持模式下输入无效：一次返回全部问题并清除旧结论', async () => {
+    const bad = {
+      procA: { states: [{ name: 's' }, { name: 's' }], initial: 'ghost', transitions: [{ id: 't1', from: 's', action: '', to: 'x' }] },
+      procB: { states: [], initial: '', transitions: [] },
+      mode: 'branching',
+    };
+    const j = await postAudit(bad);
+    assert.equal(j.ok, false);
+    assert.equal(j.mode, 'branching');
+    assert.equal(j.equivalent, null);
+    assert.ok(j.errors.length >= 4);
+    assert.deepEqual(j.rounds, []);
+    assert.deepEqual(j.eliminatedPairs, []);
+    assert.equal(j.firstEliminated, null);
+  });
+
+  await astep('页面包含分支保持复核入口与静默分叉示例', async () => {
+    const res = await fetch(`${BASE}/`);
+    const html = await res.text();
+    assert.ok(html.includes('分支保持'));
+    assert.ok(html.includes('普通弱互模拟'));
+    const samplesRes = await fetch(`${BASE}/api/samples`);
+    const all = await samplesRes.json();
+    assert.ok(all.branching, '内置示例须含静默分叉案例');
   });
 
   await astep('无效输入：一次返回全部问题并清除旧结论', async () => {
