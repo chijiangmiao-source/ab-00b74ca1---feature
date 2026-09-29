@@ -12,6 +12,7 @@
   .sub { color: #9aa6c2; font-size: 12px; }
   main { max-width: 1180px; margin: 0 auto; padding: 20px 24px 60px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
   .card { background: #161d2e; border: 1px solid #2a3350; border-radius: 10px; padding: 16px; }
   .card h2 { font-size: 14px; margin: 0 0 10px; color: #b9c4e0; }
   label { display:block; font-size: 12px; color: #9aa6c2; margin: 8px 0 4px; }
@@ -24,6 +25,11 @@
   button.ghost { background: #232c45; color: #c6cfe6; }
   button:hover { filter: brightness(1.1); }
   select { background: #232c45; color: #e6e9ef; border: 1px solid #3a466e; border-radius: 6px; padding: 7px 10px; }
+  .mode { display: inline-flex; border: 1px solid #3a466e; border-radius: 8px; overflow: hidden; }
+  .mode label { margin: 0; padding: 8px 14px; cursor: pointer; font-size: 13px; color: #c6cfe6; background: #1c2540; }
+  .mode input { display: none; }
+  .mode input:checked + span { color: #fff; font-weight: 600; }
+  .mode label:has(input:checked) { background: #3b6cf6; }
   .verdict { margin-top: 16px; padding: 14px 16px; border-radius: 8px; font-size: 15px; font-weight: 600; }
   .verdict.eq { background: #10331f; border: 1px solid #2f8f5b; color: #88e0a0; }
   .verdict.ne { background: #3a1419; border: 1px solid #a23a44; color: #f0a2ab; }
@@ -37,12 +43,17 @@
   .tag { display: inline-block; padding: 0 7px; border-radius: 10px; font-size: 11px; background: #2a3556; color: #c6cfe6; }
   .tag.a { background: #1e3a5f; color: #9dc8ff; }
   .tag.b { background: #4a2e52; color: #e0b0ec; }
+  .tag.bad { background: #4a2026; color: #f0a2ab; }
+  .tag.ok { background: #1e4030; color: #88e0a0; }
   .errors li { color: #f0a2ab; margin-bottom: 3px; }
   details { margin-top: 6px; }
   summary { cursor: pointer; color: #9dc8ff; font-size: 12px; }
   .muted { color: #8893ad; font-size: 12px; }
   .scroll { max-height: 420px; overflow: auto; border: 1px solid #2a3350; border-radius: 8px; }
   code { background: #0d1220; padding: 1px 5px; border-radius: 4px; }
+  .panel-title { font-size: 14px; font-weight: 700; color: #b9c4e0; margin: 0 0 10px; }
+  .panel-title .tag { margin-left: 8px; }
+  .stale { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: #1e2740; border: 1px solid #3a466e; color: #9aa6c2; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -58,9 +69,14 @@
       <option value="equivalent">tau 自环 + 重命名（应等价）</option>
       <option value="missing">缺失匹配动作（应不等价）</option>
       <option value="cascade">多轮级联淘汰（初始对第 2 轮失败）</option>
+      <option value="branching">静默分叉（弱互模拟等价 / 分支保持不等价）</option>
     </select>
     <button class="ghost" id="loadBtn">载入</button>
     <span style="flex:1"></span>
+    <div class="mode" id="modeSwitch" role="radiogroup" aria-label="复核模式">
+      <label><input type="radio" name="mode" value="weak" checked /><span>普通弱互模拟</span></label>
+      <label><input type="radio" name="mode" value="branching" /><span>分支保持复核</span></label>
+    </div>
     <button id="submitBtn">提交审计</button>
   </div>
 
@@ -82,6 +98,47 @@
 const $ = (id) => document.getElementById(id);
 const fmt = JSON.stringify;
 
+let currentMode = 'weak';      // 当前页面选定的复核模式
+let lastResult = null;         // 最近一次审计结论
+let lastResultMode = null;     // 最近一次结论所用模式
+
+function getMode() {
+  return document.querySelector('input[name=mode]:checked').value;
+}
+
+for (const id of ['inputA', 'inputB']) {
+  $(id).addEventListener('input', () => {
+    // 修改任一规程后，旧分支保持结论与依据必须清除
+    if (lastResultMode === 'branching') {
+      lastResult = null;
+      lastResultMode = null;
+      renderStaleNotice();
+    }
+  });
+}
+$('modeSwitch').addEventListener('change', () => {
+  const next = getMode();
+  if (next === currentMode) return;
+  currentMode = next;
+  if (lastResultMode === 'branching') {
+    // 切回普通模式：分支保持结论与依据立即清除
+    lastResult = null;
+    lastResultMode = null;
+  }
+  if (lastResultMode !== null && lastResultMode !== currentMode) {
+    // 切换复核模式后，旧模式结论不再代表当前选择，提示重新提交
+    lastResult = null;
+    lastResultMode = null;
+  }
+  $('result').innerHTML = currentMode === 'branching'
+    ? '<div class="verdict none">已切换为分支保持复核；请提交审计，结论将与普通弱互模拟并列显示。</div>'
+    : '<div class="verdict none">已切回普通弱互模拟模式；旧分支保持结论与依据已清除，请提交审计。</div>';
+});
+
+function renderStaleNotice() {
+  $('result').innerHTML = '<div class="stale">规程已修改：旧分支保持结论与依据已清除，请重新提交审计。</div>';
+}
+
 $('loadBtn').onclick = async () => {
   const key = $('sample').value;
   if (!key) return;
@@ -90,7 +147,16 @@ $('loadBtn').onclick = async () => {
   const s = all[key];
   $('inputA').value = fmt(s.procA, null, 2);
   $('inputB').value = fmt(s.procB, null, 2);
-  $('result').innerHTML = '<div class="verdict none">已载入示例：' + s.label + '，请提交审计。</div>';
+  // 载入新规程：旧结论（含分支保持依据）一律清除
+  lastResult = null;
+  lastResultMode = null;
+  if (key === 'branching') {
+    document.querySelector('input[name=mode][value=branching]').checked = true;
+    currentMode = 'branching';
+    $('result').innerHTML = '<div class="verdict none">已载入静默分叉示例：' + s.label + '。该例普通弱互模拟判等价、分支保持判不等价，请提交审计。</div>';
+  } else {
+    $('result').innerHTML = '<div class="verdict none">已载入示例：' + s.label + '，请提交审计。</div>';
+  }
 };
 
 function esc(s) {
@@ -102,18 +168,31 @@ $('submitBtn').onclick = async () => {
   const parseErrors = [];
   try { procA = JSON.parse($('inputA').value); } catch (e) { parseErrors.push({ side: 'A', message: '规程 A 不是合法 JSON：' + e.message }); }
   try { procB = JSON.parse($('inputB').value); } catch (e) { parseErrors.push({ side: 'B', message: '规程 B 不是合法 JSON：' + e.message }); }
-  if (parseErrors.length) { render({ ok: false, equivalent: null, errors: parseErrors, rounds: [], eliminatedPairs: [], firstEliminated: null, initialPairs: [] }); return; }
-  const res = await fetch('/api/audit', {
+  if (parseErrors.length) {
+    const fallback = { ok: false, equivalent: null, errors: parseErrors, rounds: [], eliminatedPairs: [], firstEliminated: null, initialPairs: [] };
+    render(fallback);
+    return;
+  }
+  currentMode = getMode();
+  const qs = currentMode === 'branching' ? '?mode=branching' : '';
+  const res = await fetch('/api/audit' + qs, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ procA, procB }),
   });
-  render(await res.json());
+  const data = await res.json();
+  lastResult = data;
+  lastResultMode = currentMode;
+  render(data);
 };
 
 function render(r) {
   const root = $('result');
   if (r.ok === false || (r.errors && r.errors.length)) {
     root.innerHTML = renderErrors(r.errors || []);
+    return;
+  }
+  if (r.mode === 'branching') {
+    root.innerHTML = renderBranching(r);
     return;
   }
   root.innerHTML = renderVerdict(r) + renderInitialPairs(r) + renderFirst(r) + renderRounds(r) + renderRelation(r) + renderEliminated(r);
@@ -198,6 +277,145 @@ function renderEliminated(r) {
   return `<details style="margin-top:14px"><summary>全部淘汰状态对（${r.eliminatedPairs.length}）</summary>
     <div class="card" style="margin-top:8px"><div class="scroll"><table>
     <tr><th>轮次</th><th>状态对</th><th>首个失败动作</th><th>挑战方</th><th>失败义务与更早轮次依据</th></tr>${rows}</table></div></div></details>`;
+}
+
+// ---------- 分支保持复核 ----------
+
+function renderBranching(r) {
+  const w = r.weak || {};
+  const header = `<div class="grid2">
+      <section class="card">
+        <p class="panel-title">分支保持复核<span class="tag">branching</span></p>
+        ${renderBranchingVerdict(r)}
+      </section>
+      <section class="card">
+        <p class="panel-title">普通弱互模拟<span class="tag">weak（并列对照）</span></p>
+        ${renderVerdict(w)}
+      </section>
+    </div>`;
+  // 并列结论之下：分支保持的初始对、淘汰依据与过程；普通弱互模拟依据折叠并列其后
+  return header
+    + renderBranchingInitial(r)
+    + renderBranchingFirst(r)
+    + renderBranchingRounds(r)
+    + renderBranchingRelation(r)
+    + renderBranchingEliminated(r)
+    + `<details style="margin-top:18px"><summary style="font-size:13px;color:#b9c4e0;font-weight:600">并列对照：普通弱互模拟审计依据</summary>
+        <div style="margin-top:8px">${renderInitialPairs(w)}${renderFirst(w)}${renderRounds(w)}${renderRelation(w)}${renderEliminated(w)}</div>
+      </details>`;
+}
+
+function renderBranchingVerdict(r) {
+  if (r.equivalent) {
+    return `<div class="verdict eq">✓ 分支保持等价：静默前缀穿越的每个状态都未丢失另一方仍可观察的分支承诺。
+      <small>候选响应的静默前缀状态与挑战源始终同轮相关，随后承接同一可观察动作。</small></div>`;
+  }
+  return `<div class="verdict ne">✗ 分支保持不等价：存在静默前缀穿越后悄然丢失的可观察分支承诺。
+    <small>展开首个淘汰状态对、挑战动作、静默前缀候选及其同轮关系违约，可自底向上复算。</small></div>`;
+}
+
+function renderBranchingInitial(r) {
+  const w = r.weak || { initialPairs: r.initialPairs, initialAlive: r.initialAlive.map(() => null) };
+  const rows = r.initialPairs.map((p, i) => {
+    const alive = r.initialAlive[i];
+    const weakAlive = w.initialAlive ? w.initialAlive[i] : null;
+    return `<tr><td class="mono">(${esc(p[0])}, ${esc(p[1])})</td>
+      <td>${alive ? '<span style="color:#88e0a0">在分支保持关系中</span>' : '<span style="color:#f0a2ab">已淘汰</span>'}</td>
+      <td>${weakAlive === null ? '—' : weakAlive ? '<span style="color:#88e0a0">在弱互模拟关系中</span>' : '<span style="color:#f0a2ab">已淘汰</span>'}</td></tr>`;
+  }).join('');
+  return `<h3>初始状态对在两种关系中的结果（两个方向）</h3><div class="card"><table>
+    <tr><th>初始状态对</th><th>分支保持</th><th>普通弱互模拟</th></tr>${rows}</table></div>`;
+}
+
+function renderBranchingFirst(r) {
+  const f = r.firstEliminated;
+  if (!f) return '<h3>分支保持淘汰依据</h3><div class="card muted">无淘汰状态对。</div>';
+  return `<h3>首个淘汰状态对（按轮次、状态对稳定排序）</h3>
+  <div class="card">
+    <div>状态对 <b class="mono">(${esc(f.pair[0])}, ${esc(f.pair[1])})</b> 在第 <b>${f.round}</b> 轮淘汰</div>
+    <div style="margin-top:6px">挑战动作：<code>${esc(f.action)}</code>
+      <span class="tag ${f.challenger === 'A' ? 'a' : 'b'}">挑战方 ${esc(f.challenger)}</span>
+      <span class="tag ${f.responder === 'A' ? 'a' : 'b'}">应答方 ${esc(f.responder)}</span></div>
+    ${renderBranchingTransitions(f)}
+  </div>`;
+}
+
+function renderPrefixPath(prefix, action, target) {
+  const chain = prefix.map((s) => esc(s)).join(' <span class="muted">=tau=&gt;</span> ');
+  if (action === 'tau') {
+    return `<span class="mono">${chain}</span>`;
+  }
+  return `<span class="mono">${chain} <span class="muted">--${esc(action)}--&gt;</span> ${esc(target)}</span>`;
+}
+
+function renderViolation(v) {
+  if (v.kind === 'LANDING_PAIR') {
+    return `<span class="tag bad">落点对违约</span>
+      承接落点状态对 <span class="mono">(${esc(v.pair[0])}, ${esc(v.pair[1])})</span>
+      不在同轮关系中${v.eliminatedRound ? `（已于第 ${v.eliminatedRound} 轮淘汰）` : ''}`;
+  }
+  return `<span class="tag bad">静默前缀违约</span>
+    静默前缀经过状态 <b class="mono">${esc(v.state)}</b>，其对应状态对
+    <span class="mono">(${esc(v.pair[0])}, ${esc(v.pair[1])})</span>
+    不与挑战源留在同一轮关系中${v.eliminatedRound ? `（已于第 ${v.eliminatedRound} 轮淘汰）` : ''}`;
+}
+
+function renderBranchingTransitions(f) {
+  const blocks = f.transitions.map((t) => {
+    if (t.reason === 'NO_MATCHING_ACTION' || !t.candidates || !t.candidates.length) {
+      return `<div class="card" style="margin:8px 0">
+        <div>挑战转移 <span class="mono">${esc(f.challenger)}.${esc(t.source)} --${esc(f.action)}--&gt;</span></div>
+        <div class="muted" style="margin-top:4px">应答侧无该动作的任何迁移（含静默前缀后承接）可承接。</div></div>`;
+    }
+    const rows = t.candidates.map((c, idx) => {
+      const status = c.ok
+        ? '<span class="tag ok">同轮关系成立</span>'
+        : `<details ${idx === 0 ? 'open' : ''}><summary>同轮关系违约（${c.violations.length}）</summary>
+           <ul style="margin:6px 0 0;padding-left:18px">${c.violations.map((v) => `<li style="margin-bottom:4px">${renderViolation(v)}</li>`).join('')}</ul></details>`;
+      return `<tr>
+        <td class="mono">${renderPrefixPath(c.prefix, c.action, c.target)}</td>
+        <td>${c.ok ? '<span class="muted">—</span>' : status}</td></tr>`;
+    }).join('');
+    return `<div class="card" style="margin:8px 0">
+      <div>挑战转移 <span class="mono">${esc(f.challenger)}.${esc(t.source)} --${esc(f.action)}--&gt;</span>
+        <span class="muted">：应答侧静默前缀候选（按落点状态、前缀长度、前缀状态稳定排序）</span></div>
+      <div class="scroll" style="margin-top:6px"><table>
+        <tr><th>静默前缀候选</th><th>同轮关系违约</th></tr>${rows}</table></div>
+      ${f.evidenceTruncated ? '<div class="muted" style="margin-top:4px">候选超过展示上限，仅列出前若干条；成败判定不受影响。</div>' : ''}
+    </div>`;
+  }).join('');
+  return `<div style="margin-top:10px">${blocks}</div>`;
+}
+
+function renderBranchingRounds(r) {
+  const rows = r.rounds.map((rd) => `<tr><td>第 ${rd.round} 轮</td><td>${rd.eliminated.length}</td>
+    <td class="mono">${rd.eliminated.map((e) => `(${esc(e.pair[0])},${esc(e.pair[1])}) ${esc(e.action)}/${esc(e.challenger)}`).join('；') || '— 不动点，停止 —'}</td></tr>`).join('');
+  return `<details style="margin-top:18px"><summary style="font-size:13px;color:#b9c4e0;font-weight:600">分支保持按轮次淘汰过程</summary>
+    <div class="card" style="margin-top:8px"><div class="scroll"><table>
+    <tr><th>轮次</th><th>淘汰数</th><th>淘汰对（状态对/挑战动作/挑战方）</th></tr>${rows}</table></div></div></details>`;
+}
+
+function renderBranchingRelation(r) {
+  return `<details><summary style="margin:18px 0 8px">最终分支保持关系（${r.finalRelation.length} 个有序对，对称呈现）</summary>
+    <div class="card"><div class="mono" style="line-height:2">${r.finalRelation.map((p) => `<span class="tag">(${esc(p[0])}, ${esc(p[1])})</span>`).join(' ') || '∅'}</div></div></details>`;
+}
+
+function renderBranchingEliminated(r) {
+  if (!r.eliminatedPairs.length) return '';
+  const rows = r.eliminatedPairs.map((f) => `<tr>
+      <td>${f.round}</td><td class="mono">(${esc(f.pair[0])}, ${esc(f.pair[1])})</td>
+      <td><code>${esc(f.action)}</code></td>
+      <td><span class="tag ${f.challenger === 'A' ? 'a' : 'b'}">${esc(f.challenger)}</span></td>
+      <td>${f.transitions.map((t) => {
+        if (t.reason === 'NO_MATCHING_ACTION' || !t.candidates || !t.candidates.length) return `无承接（${esc(t.source)}）`;
+        const bad = t.candidates.find((c) => !c.ok);
+        if (!bad) return `${esc(t.source)} → 全部候选成立`;
+        return `${esc(t.source)} → 违约候选: ` + renderPrefixPath(bad.prefix, f.action, bad.target);
+      }).join('<br>')}</td>
+    </tr>`).join('');
+  return `<details style="margin-top:14px"><summary>全部分支保持淘汰状态对（${r.eliminatedPairs.length}）</summary>
+    <div class="card" style="margin-top:8px"><div class="scroll"><table>
+    <tr><th>轮次</th><th>状态对</th><th>首个失败动作</th><th>挑战方</th><th>失败义务与违约静默前缀候选</th></tr>${rows}</table></div></div></details>`;
 }
 
 (async () => {

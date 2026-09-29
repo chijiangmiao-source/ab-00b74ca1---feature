@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { audit, weakTargets, normalize, TAU } = require('../src/bisimulation');
+const { audit, auditWeak, auditBranching, weakTargets, normalize, TAU } = require('../src/bisimulation');
 const { samples } = require('../src/samples');
 
 test('仅以 tau 环重命名而等价：关系包含两个初始状态对', () => {
@@ -215,4 +215,143 @@ test('18 状态 4 动作的上限边界可正常计算', () => {
   const r = audit(mk('s'), mk('q'));
   assert.equal(r.ok, true);
   assert.equal(r.equivalent, true);
+});
+
+// ---------- 分支保持复核 ----------
+
+test('分支保持：弱互模拟等价的静默分叉案例在分支保持下不等价', () => {
+  const r = auditBranching(samples.branching.procA, samples.branching.procB);
+  assert.equal(r.mode, 'branching');
+  assert.equal(r.equivalent, false);
+
+  // 静默状态 aa 与初态 b0 不相关（aa 丢失 b 承诺）：第 1 轮即淘汰
+  const aaB0 = r.eliminatedPairs.find((p) => p.pair[0] === 'aa' && p.pair[1] === 'b0');
+  assert.equal(aaB0.round, 1);
+  assert.equal(aaB0.action, 'b');
+  assert.equal(aaB0.challenger, 'B');
+
+  // 初始对在第 2 轮因 B 的直接 a 挑战失败：A 只能穿过 aa，而 (b0,aa) 已于第 1 轮淘汰
+  const init = r.eliminatedPairs.find((p) => p.pair[0] === 'a0' && p.pair[1] === 'b0');
+  assert.equal(init.round, 2);
+  assert.equal(init.action, 'a');
+  assert.equal(init.challenger, 'B');
+  const fail = init.transitions.find((t) => t.source === 'bz');
+  assert.equal(fail.reason, 'NO_VALID_PREFIX');
+  const cand = fail.candidates[0];
+  assert.deepEqual(cand.prefix, ['a0', 'aa']);
+  assert.equal(cand.action, 'a');
+  assert.equal(cand.target, 'az');
+  assert.equal(cand.ok, false);
+  const v = cand.violations[0];
+  assert.equal(v.kind, 'PREFIX_PAIR');
+  assert.equal(v.state, 'aa');
+  assert.deepEqual(v.pair, ['b0', 'aa']);
+  assert.equal(v.eliminatedRound, 1);
+
+  // 同轮关系违约只引用更早轮次（此处第 2 轮引用第 1 轮）
+  for (const ep of r.eliminatedPairs) {
+    for (const t of ep.transitions) {
+      if (!t.candidates) continue;
+      for (const c of t.candidates) {
+        for (const vio of c.violations) {
+          assert.ok(typeof vio.eliminatedRound === 'number');
+          assert.ok(vio.eliminatedRound < ep.round, `违约依据轮次应更早: ${JSON.stringify(vio)} in round ${ep.round}`);
+        }
+      }
+    }
+  }
+});
+
+test('分支保持：audit(mode=branching) 内嵌普通弱互模拟结论并列对照', () => {
+  const r = audit(samples.branching.procA, samples.branching.procB, 'branching');
+  assert.equal(r.mode, 'branching');
+  assert.equal(r.equivalent, false);
+  assert.ok(r.weak, '应内嵌普通弱互模拟结论');
+  assert.equal(r.weak.equivalent, true, '同一案例普通弱互模拟必须判等价');
+  assert.equal(r.weak.mode, undefined, '普通结论保持原有字段结构（无 mode）');
+  assert.ok(r.weak.finalRelation.some((p) => p[0] === 'a0' && p[1] === 'b0'));
+  assert.equal(r.initialPairs.length, 2);
+});
+
+test('分支保持：普通 audit() 默认 weak 且返回结构不含分支字段', () => {
+  const r = audit(samples.branching.procA, samples.branching.procB);
+  assert.equal(r.mode, undefined);
+  assert.equal(r.equivalent, true);
+  assert.equal(r.weak, undefined);
+});
+
+test('分支保持：tau 挑战允许静默至不相关状态后的落点（只要落点对存活）', () => {
+  // A = tau.p；B = tau.r，p、r 均为终态：两侧同构，tau 挑战可由对方静默承接，
+  // 也可零步承接（落点对存活即可）。分支保持应等价。
+  const A = {
+    states: [{ name: 's' }, { name: 'p' }],
+    initial: 's',
+    transitions: [{ id: 't', from: 's', action: 'tau', to: 'p' }],
+  };
+  const B = {
+    states: [{ name: 'q' }, { name: 'r' }],
+    initial: 'q',
+    transitions: [{ id: 't', from: 'q', action: 'tau', to: 'r' }],
+  };
+  const r = auditBranching(A, B);
+  assert.equal(r.equivalent, true);
+});
+
+test('分支保持：强 tau 挑战到无承诺状态时，零步静默落点违约', () => {
+  // A：s 可静默到终态 p（提交后 a 承诺消失），也可直接 a 到终态；B：q 仅直接 a 到终态。
+  // 可见动作 a 双向可承接；但 A 的强 tau 挑战 s→p 时，B 无静默可走，
+  // 零步落点 (p,q) 因 q 仍有 a 承诺而在第 1 轮淘汰，初始对的首个失败义务即 tau。
+  const A = {
+    states: [{ name: 's' }, { name: 'p' }, { name: 'p2' }],
+    initial: 's',
+    transitions: [
+      { id: 't', from: 's', action: 'tau', to: 'p' },
+      { id: 'a', from: 's', action: 'a', to: 'p2' },
+    ],
+  };
+  const B = {
+    states: [{ name: 'q' }, { name: 'r' }],
+    initial: 'q',
+    transitions: [{ id: 'a', from: 'q', action: 'a', to: 'r' }],
+  };
+  const r = auditBranching(A, B);
+  assert.equal(r.equivalent, false);
+  const sq = r.eliminatedPairs.find((p) => p.pair[0] === 's' && p.pair[1] === 'q');
+  assert.equal(sq.action, TAU);
+  assert.equal(sq.challenger, 'A');
+  const fail = sq.transitions[0];
+  assert.equal(fail.source, 'p');
+  assert.equal(fail.reason, 'NO_VALID_PREFIX');
+  const zero = fail.candidates.find((c) => c.prefix.length === 1);
+  assert.deepEqual(zero.prefix, ['q']);
+  assert.equal(zero.violations[0].kind, 'LANDING_PAIR');
+  assert.deepEqual(zero.violations[0].pair, ['p', 'q']);
+});
+
+test('分支保持：候选静默前缀按落点状态、前缀长度、前缀序列稳定排序', () => {
+  const r = auditBranching(samples.branching.procA, samples.branching.procB);
+  for (const ep of r.eliminatedPairs) {
+    for (const t of ep.transitions) {
+      if (!t.candidates) continue;
+      const key = (c) => `${c.target} ${c.prefix.length} ${c.prefix.join('/')}`;
+      const keys = t.candidates.map(key);
+      assert.deepEqual(keys, [...keys].sort(), `候选未稳定排序：${JSON.stringify(keys)}`);
+    }
+  }
+});
+
+test('分支保持：无效输入一次返回全部问题且不产出任何模式结论', () => {
+  const bad = { states: [{ name: 'x' }, { name: 'x' }], initial: 'ghost', transitions: [] };
+  const r = audit(bad, { states: [], initial: '', transitions: [] }, 'branching');
+  assert.equal(r.ok, false);
+  assert.equal(r.mode, 'branching');
+  assert.equal(r.equivalent, null);
+  assert.ok(r.errors.length >= 3);
+  assert.deepEqual(r.rounds, []);
+  assert.deepEqual(r.eliminatedPairs, []);
+  assert.equal(r.firstEliminated, null);
+  assert.ok(r.weak, '并列的普通结论也应存在但为空结论');
+  assert.equal(r.weak.ok, false);
+  assert.equal(r.weak.equivalent, null);
+  assert.deepEqual(r.weak.rounds, []);
 });

@@ -50,14 +50,16 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/api/audit') {
     let payload;
+    const mode = url.searchParams.get('mode') === 'branching' ? 'branching' : 'weak';
     try {
       const raw = await readBody(req);
       payload = JSON.parse(raw);
     } catch (e) {
-      sendJson(res, 400, { ok: false, equivalent: null, errors: [{ code: 'BAD_JSON', field: 'body', side: null, message: '请求体不是合法 JSON' }], rounds: [], eliminatedPairs: [], firstEliminated: null, initialPairs: [] });
+      const base = { ok: false, equivalent: null, errors: [{ code: 'BAD_JSON', field: 'body', side: null, message: '请求体不是合法 JSON' }], rounds: [], eliminatedPairs: [], firstEliminated: null, initialPairs: [] };
+      sendJson(res, 400, mode === 'branching' ? { mode, ...base } : base);
       return;
     }
-    const result = audit(payload.procA, payload.procB);
+    const result = audit(payload.procA, payload.procB, mode);
     // 输入无效时同样以 200 返回结构化问题集合（结论字段为空，表示已清除旧结论）；
     // 仅结构错误（非 JSON）才返回 400。
     sendJson(res, 200, result);
