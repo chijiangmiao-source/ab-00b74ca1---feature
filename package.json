@@ -1,0 +1,13 @@
+{
+  "name": "silent-jump-audit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "含 tau 静默跳转的故障规程弱互模拟审计",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

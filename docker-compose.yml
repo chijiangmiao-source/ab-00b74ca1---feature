@@ -1,0 +1,32 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: silent-jump-audit:latest
+    environment:
+      # 宿主机可配置端口由下面的 ports 映射控制；容器内固定 8080
+      PORT: "8080"
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    restart: unless-stopped
+
+  verify:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: silent-jump-audit:latest
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      WEB_BASE_URL: "http://web:8080"
+    # 独立执行构建检查、代码测试与接口/HTTP 冒烟，完成后以退出码报告结果
+    entrypoint: ["node", "scripts/verify.js"]
+    restart: "no"

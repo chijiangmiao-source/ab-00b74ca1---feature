@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>静默跳转故障规程 · 弱互模拟审计</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #0f1420; color: #e6e9ef; }
+  header { padding: 16px 24px; background: #161d2e; border-bottom: 1px solid #2a3350; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #9aa6c2; font-size: 12px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 24px 60px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #161d2e; border: 1px solid #2a3350; border-radius: 10px; padding: 16px; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; color: #b9c4e0; }
+  label { display:block; font-size: 12px; color: #9aa6c2; margin: 8px 0 4px; }
+  textarea { width: 100%; min-height: 340px; box-sizing: border-box; resize: vertical;
+    font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; background: #0d1220; color: #d7dcea;
+    border: 1px solid #2a3350; border-radius: 6px; padding: 10px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 14px 0; }
+  button { background: #3b6cf6; color: #fff; border: 0; border-radius: 6px; padding: 8px 18px;
+    font-size: 13px; cursor: pointer; }
+  button.ghost { background: #232c45; color: #c6cfe6; }
+  button:hover { filter: brightness(1.1); }
+  select { background: #232c45; color: #e6e9ef; border: 1px solid #3a466e; border-radius: 6px; padding: 7px 10px; }
+  .verdict { margin-top: 16px; padding: 14px 16px; border-radius: 8px; font-size: 15px; font-weight: 600; }
+  .verdict.eq { background: #10331f; border: 1px solid #2f8f5b; color: #88e0a0; }
+  .verdict.ne { background: #3a1419; border: 1px solid #a23a44; color: #f0a2ab; }
+  .verdict.none { background: #1e2740; border: 1px solid #3a466e; color: #9aa6c2; }
+  .verdict small { display:block; font-weight: 400; margin-top: 4px; color: #c2cbdd; font-size: 12px; }
+  h3 { font-size: 13px; margin: 20px 0 8px; color: #b9c4e0; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { border: 1px solid #2a3350; padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: #1c2540; color: #aeb9d6; position: sticky; top: 0; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .tag { display: inline-block; padding: 0 7px; border-radius: 10px; font-size: 11px; background: #2a3556; color: #c6cfe6; }
+  .tag.a { background: #1e3a5f; color: #9dc8ff; }
+  .tag.b { background: #4a2e52; color: #e0b0ec; }
+  .errors li { color: #f0a2ab; margin-bottom: 3px; }
+  details { margin-top: 6px; }
+  summary { cursor: pointer; color: #9dc8ff; font-size: 12px; }
+  .muted { color: #8893ad; font-size: 12px; }
+  .scroll { max-height: 420px; overflow: auto; border: 1px solid #2a3350; border-radius: 8px; }
+  code { background: #0d1220; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>静默跳转故障规程 · 弱互模拟审计</h1>
+  <div class="sub">录入两份规程的有限状态、初始状态与迁移（内部跳转动作为 <code>tau</code>），提交后判定两个初始状态是否维持相同的可观察承诺。</div>
+</header>
+<main>
+  <div class="row">
+    <label style="margin:0">载入示例：</label>
+    <select id="sample">
+      <option value="">— 选择 —</option>
+      <option value="equivalent">tau 自环 + 重命名（应等价）</option>
+      <option value="missing">缺失匹配动作（应不等价）</option>
+      <option value="cascade">多轮级联淘汰（初始对第 2 轮失败）</option>
+    </select>
+    <button class="ghost" id="loadBtn">载入</button>
+    <span style="flex:1"></span>
+    <button id="submitBtn">提交审计</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>规程 A</h2>
+      <textarea id="inputA" spellcheck="false"></textarea>
+    </div>
+    <div class="card">
+      <h2>规程 B</h2>
+      <textarea id="inputB" spellcheck="false"></textarea>
+    </div>
+  </div>
+
+  <div id="result"></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = JSON.stringify;
+
+$('loadBtn').onclick = async () => {
+  const key = $('sample').value;
+  if (!key) return;
+  const res = await fetch('/api/samples');
+  const all = await res.json();
+  const s = all[key];
+  $('inputA').value = fmt(s.procA, null, 2);
+  $('inputB').value = fmt(s.procB, null, 2);
+  $('result').innerHTML = '<div class="verdict none">已载入示例：' + s.label + '，请提交审计。</div>';
+};
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+$('submitBtn').onclick = async () => {
+  let procA, procB;
+  const parseErrors = [];
+  try { procA = JSON.parse($('inputA').value); } catch (e) { parseErrors.push({ side: 'A', message: '规程 A 不是合法 JSON：' + e.message }); }
+  try { procB = JSON.parse($('inputB').value); } catch (e) { parseErrors.push({ side: 'B', message: '规程 B 不是合法 JSON：' + e.message }); }
+  if (parseErrors.length) { render({ ok: false, equivalent: null, errors: parseErrors, rounds: [], eliminatedPairs: [], firstEliminated: null, initialPairs: [] }); return; }
+  const res = await fetch('/api/audit', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ procA, procB }),
+  });
+  render(await res.json());
+};
+
+function render(r) {
+  const root = $('result');
+  if (r.ok === false || (r.errors && r.errors.length)) {
+    root.innerHTML = renderErrors(r.errors || []);
+    return;
+  }
+  root.innerHTML = renderVerdict(r) + renderInitialPairs(r) + renderFirst(r) + renderRounds(r) + renderRelation(r) + renderEliminated(r);
+}
+
+function renderErrors(errors) {
+  const items = errors.map((e) => `<li><span class="tag ${e.side === 'A' ? 'a' : e.side === 'B' ? 'b' : ''}">${esc(e.side || '-')}</span>
+    <code>${esc(e.code)}</code> ${esc(e.message)}</li>`).join('');
+  return `<div class="verdict none">输入无效，已清除旧结论；请一次修复以下全部问题后重新提交。<small>旧结论已清除，不输出等价判定与轮次。</small></div>
+  <div class="card"><h2>全部问题（${errors.length}）</h2><ul class="errors">${items}</ul></div>`;
+}
+
+function renderVerdict(r) {
+  if (r.equivalent) {
+    return `<div class="verdict eq">✓ 等价：两个初始状态维持相同的可观察承诺。
+      <small>弱互模拟关系包含两个初始状态对；所有差异仅为静默 <code>tau</code> 跳转（含重命名）。</small></div>`;
+  }
+  return `<div class="verdict ne">✗ 不等价：一侧存在另一侧无法以“静默前缀后承接同动作”履行的可观察承诺。
+    <small>展开下方首个淘汰状态对、挑战动作与按轮次递减的依据，可自底向上复算。</small></div>`;
+}
+
+function renderInitialPairs(r) {
+  const rows = r.initialPairs.map((p, i) => {
+    const alive = r.initialAlive[i];
+    return `<tr><td class="mono">(${esc(p[0])}, ${esc(p[1])})</td><td>${alive ? '<span style="color:#88e0a0">在最终关系中</span>' : '<span style="color:#f0a2ab">已淘汰</span>'}</td></tr>`;
+  }).join('');
+  return `<h3>关系中的初始状态对（两个方向）</h3><div class="card"><table><tr><th>初始状态对</th><th>结果</th></tr>${rows}</table></div>`;
+}
+
+function renderFirst(r) {
+  const f = r.firstEliminated;
+  if (!f) return '<h3>淘汰依据</h3><div class="card muted">无淘汰状态对。</div>';
+  return `<h3>首个淘汰状态对（按轮次、状态对稳定排序）</h3>
+  <div class="card">
+    <div>状态对 <b class="mono">(${esc(f.pair[0])}, ${esc(f.pair[1])})</b> 在第 <b>${f.round}</b> 轮淘汰</div>
+    <div style="margin-top:6px">首个失败义务的挑战动作：<code>${esc(f.action)}</code>
+      <span class="tag ${f.challenger === 'A' ? 'a' : 'b'}">挑战方 ${esc(f.challenger)}</span>
+      <span class="tag ${f.responder === 'A' ? 'a' : 'b'}">应答方 ${esc(f.responder)}</span></div>
+    ${renderTransitions(f)}
+  </div>`;
+}
+
+function renderTransitions(f) {
+  const rows = f.transitions.map((t) => {
+    let detail;
+    if (t.reason === 'NO_MATCHING_ACTION') {
+      detail = '<span class="muted">应答侧无该动作的任何（弱）转移可承接</span>';
+    } else {
+      detail = '<details open><summary>候选响应（依据按轮次递减，仅引用更早轮次淘汰结果）</summary><table>'
+        + '<tr><th>响应落点</th><th>落点状态对</th><th>淘汰轮次</th></tr>'
+        + t.responses.map((w) => `<tr><td class="mono">${esc(w.target)}</td><td class="mono">(${esc(w.pair[0])}, ${esc(w.pair[1])})</td><td>第 ${w.eliminatedRound} 轮</td></tr>`).join('')
+        + '</table></details>';
+    }
+    return `<tr><td class="mono">${esc(f.challenger)}.${esc(t.source)} --${esc(f.action)}--&gt;</td><td>${detail}</td></tr>`;
+  }).join('');
+  return `<div class="scroll" style="margin-top:10px"><table><tr><th>挑战转移</th><th>候选响应与失败依据</th></tr>${rows}</table></div>`;
+}
+
+function renderRounds(r) {
+  const rows = r.rounds.map((rd) => `<tr><td>第 ${rd.round} 轮</td><td>${rd.eliminated.length}</td>
+    <td class="mono">${rd.eliminated.map((e) => `(${esc(e.pair[0])},${esc(e.pair[1])}) ${esc(e.action)}/${esc(e.challenger)}`).join('；') || '— 不动点，停止 —'}</td></tr>`).join('');
+  return `<details style="margin-top:18px"><summary style="font-size:13px;color:#b9c4e0;font-weight:600">按轮次淘汰过程</summary>
+    <div class="card" style="margin-top:8px"><div class="scroll"><table>
+    <tr><th>轮次</th><th>淘汰数</th><th>淘汰对（状态对/挑战动作/挑战方）</th></tr>${rows}</table></div></div></details>`;
+}
+
+function renderRelation(r) {
+  return `<details><summary style="margin:18px 0 8px">最终弱互模拟关系（${r.finalRelation.length} 个有序对，对称呈现）</summary>
+    <div class="card"><div class="mono" style="line-height:2">${r.finalRelation.map((p) => `<span class="tag">(${esc(p[0])}, ${esc(p[1])})</span>`).join(' ') || '∅'}</div></div></details>`;
+}
+
+function renderEliminated(r) {
+  if (!r.eliminatedPairs.length) return '';
+  const rows = r.eliminatedPairs.map((f) => `<tr>
+      <td>${f.round}</td><td class="mono">(${esc(f.pair[0])}, ${esc(f.pair[1])})</td>
+      <td><code>${esc(f.action)}</code></td>
+      <td><span class="tag ${f.challenger === 'A' ? 'a' : 'b'}">${esc(f.challenger)}</span></td>
+      <td>${f.transitions.map((t) => t.reason === 'NO_MATCHING_ACTION'
+        ? `无匹配动作（${esc(t.source)}）`
+        : `${esc(t.source)} → 依据: ` + t.responses.map((w) => `(${esc(w.pair[0])},${esc(w.pair[1])})@R${w.eliminatedRound}`).join(', ')).join('<br>')}</td>
+    </tr>`).join('');
+  return `<details style="margin-top:14px"><summary>全部淘汰状态对（${r.eliminatedPairs.length}）</summary>
+    <div class="card" style="margin-top:8px"><div class="scroll"><table>
+    <tr><th>轮次</th><th>状态对</th><th>首个失败动作</th><th>挑战方</th><th>失败义务与更早轮次依据</th></tr>${rows}</table></div></div></details>`;
+}
+
+(async () => {
+  const res = await fetch('/api/samples');
+  const all = await res.json();
+  $('sample').value = 'equivalent';
+  const s = all.equivalent;
+  $('inputA').value = fmt(s.procA, null, 2);
+  $('inputB').value = fmt(s.procB, null, 2);
+})();
+</script>
+</body>
+</html>
